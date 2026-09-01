@@ -178,7 +178,7 @@ COLOR_RED=$'\033[31m'
 COLOR_BOLD_RED=$'\033[31m'
 COLOR_SEP=$'\033[38;5;238m' # dim gray, for a subtle field separator
 RESET=$'\033[0m'
-SEP=" ${COLOR_SEP}|${RESET} "
+SEP=" ${COLOR_SEP}$(printf '\xc2\xb7')${RESET} "
 
 if [ -n "$CLAUDE_JOB_DIR" ]; then
   mode_indicator="$(printf '%s\xe2\x97\x8b%s' "$COLOR_PROJECT" "$RESET")"
