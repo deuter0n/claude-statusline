@@ -19,6 +19,14 @@ effort = data.get("effort", {}).get("level", "") or ""
 cw = data.get("context_window", {}) or {}
 used_pct = cw.get("used_percentage")
 used_pct = "" if used_pct is None else str(used_pct)
+in_tokens = cw.get("total_input_tokens")
+in_tokens = "" if in_tokens is None else str(in_tokens)
+out_tokens = cw.get("total_output_tokens")
+out_tokens = "" if out_tokens is None else str(out_tokens)
+
+cost = data.get("cost", {}) or {}
+total_cost = cost.get("total_cost_usd")
+total_cost = "" if total_cost is None else str(total_cost)
 
 workspace = data.get("workspace", {}) or {}
 project_dir = workspace.get("project_dir", "") or ""
@@ -38,7 +46,7 @@ five_reset = "" if five_reset is None else str(five_reset)
 week_reset = seven_day.get("resets_at")
 week_reset = "" if week_reset is None else str(week_reset)
 
-for key, val in [("model", model), ("effort", effort), ("used_pct", used_pct), ("folder", folder), ("repo_name", repo_name), ("cwd", cwd), ("five_pct", five_pct), ("week_pct", week_pct), ("five_reset", five_reset), ("week_reset", week_reset)]:
+for key, val in [("model", model), ("effort", effort), ("used_pct", used_pct), ("in_tokens", in_tokens), ("out_tokens", out_tokens), ("total_cost", total_cost), ("folder", folder), ("repo_name", repo_name), ("cwd", cwd), ("five_pct", five_pct), ("week_pct", week_pct), ("five_reset", five_reset), ("week_reset", week_reset)]:
     print(f"{key}={shlex.quote(val)}")
 ')"
 
@@ -71,6 +79,21 @@ bar=""
 ctx_pct=""
 [ -n "$used_pct" ] && ctx_pct="$(printf '%.0f' "$used_pct" 2>/dev/null)%"
 
+fmt_tokens() {
+  awk -v n="$1" 'BEGIN {
+    if (n >= 1000000) printf "%.1fM", n / 1000000;
+    else if (n >= 1000) printf "%.1fk", n / 1000;
+    else printf "%d", n;
+  }'
+}
+
+fmt_cost() {
+  awk -v n="$1" 'BEGIN {
+    if (n < 1) printf "$%.3f", n;
+    else printf "$%.2f", n;
+  }'
+}
+
 fmt_duration() {
   local secs=$1
   [ "$secs" -lt 0 ] && secs=0
@@ -100,6 +123,7 @@ COLOR_MUTED=$'\033[37m'   # gray
 COLOR_GREEN=$'\033[32m'
 COLOR_CYAN=$'\033[36m'
 COLOR_YELLOW=$'\033[33m'
+COLOR_COST=$'\033[38;5;178m' # for cost, a dark gold-yellow
 COLOR_RED=$'\033[31m'
 COLOR_BOLD_RED=$'\033[31m'
 COLOR_SEP=$'\033[38;5;238m' # dim gray, for a subtle field separator
@@ -183,6 +207,19 @@ if [ -n "$limits" ]; then
 fi
 if [ -n "$bar" ]; then
   seg="${COLOR_MUTED}ctx ${RESET}$(colorize_pct "$used_pct" "$bar $ctx_pct")"
+  out="${out:+$out$SEP}$seg"
+fi
+if [ -n "$in_tokens" ] || [ -n "$out_tokens" ]; then
+  arrow_down=$(printf '\xe2\x86\x93')
+  arrow_up=$(printf '\xe2\x86\x91')
+  middle_dot=$(printf '\xc2\xb7')
+  toks=""
+  [ -n "$in_tokens" ] && toks="$(printf '%s%s %s%s' "$COLOR_CYAN" "$arrow_down" "$(fmt_tokens "$in_tokens")" "$RESET")"
+  [ -n "$out_tokens" ] && toks="${toks:+$toks $(printf '%s%s%s' "$COLOR_SEP" "$middle_dot" "$RESET") }$(printf '%s%s %s%s' "$COLOR_CYAN" "$arrow_up" "$(fmt_tokens "$out_tokens")" "$RESET")"
+  out="${out:+$out$SEP}$toks"
+fi
+if [ -n "$total_cost" ]; then
+  seg="$(printf '%s%s%s' "$COLOR_COST" "$(fmt_cost "$total_cost")" "$RESET")"
   out="${out:+$out$SEP}$seg"
 fi
 
