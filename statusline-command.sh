@@ -94,6 +94,56 @@ fmt_cost() {
   }'
 }
 
+THB_RATE_TTL=43200 # 12h; live rate is cached for this long before refetching
+THB_RATE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-statusline/thb_rate.cache"
+
+# Prints a THB rate: cached value if fresh, else refetches and re-caches it.
+# Prints nothing on any failure (no curl, no network, bad response) so the
+# THB segment just disappears rather than showing a stale/wrong number.
+# Network calls are capped at 2s so an unreachable API never stalls the
+# statusline for long.
+get_thb_rate() {
+  local rate="" mtime now_ts
+
+  if [ -f "$THB_RATE_CACHE" ]; then
+    mtime=$(stat -c %Y "$THB_RATE_CACHE" 2>/dev/null || stat -f %m "$THB_RATE_CACHE" 2>/dev/null)
+    now_ts=$(date +%s)
+    if [ -n "$mtime" ] && [ $((now_ts - mtime)) -lt "$THB_RATE_TTL" ]; then
+      rate=$(cat "$THB_RATE_CACHE" 2>/dev/null)
+    fi
+  fi
+
+  if [ -z "$rate" ] && command -v curl >/dev/null 2>&1; then
+    rate=$(curl -s --max-time 2 "https://open.er-api.com/v6/latest/USD" 2>/dev/null |
+      python3 -c '
+import json, sys
+try:
+    r = json.load(sys.stdin).get("rates", {}).get("THB")
+    if r:
+        print(r)
+except Exception:
+    pass
+' 2>/dev/null)
+    if [ -n "$rate" ]; then
+      mkdir -p "$(dirname "$THB_RATE_CACHE")" 2>/dev/null
+      printf '%s' "$rate" >"$THB_RATE_CACHE" 2>/dev/null
+    fi
+  fi
+
+  printf '%s' "$rate"
+}
+
+fmt_cost_thb() {
+  local rate
+  rate=$(get_thb_rate)
+  [ -z "$rate" ] && return
+  awk -v n="$1" -v r="$rate" 'BEGIN {
+    v = n * r;
+    if (v < 100) printf "\xe0\xb8\xbf%.2f", v;
+    else printf "\xe0\xb8\xbf%.0f", v;
+  }'
+}
+
 fmt_duration() {
   local secs=$1
   [ "$secs" -lt 0 ] && secs=0
@@ -219,7 +269,9 @@ if [ -n "$in_tokens" ] || [ -n "$out_tokens" ]; then
   out="${out:+$out$SEP}$toks"
 fi
 if [ -n "$total_cost" ]; then
+  thb="$(fmt_cost_thb "$total_cost")"
   seg="$(printf '%s%s%s' "$COLOR_COST" "$(fmt_cost "$total_cost")" "$RESET")"
+  [ -n "$thb" ] && seg="$seg $(printf '%s(%s)%s' "$COLOR_COST" "$thb" "$RESET")"
   out="${out:+$out$SEP}$seg"
 fi
 
