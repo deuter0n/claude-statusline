@@ -7,6 +7,3 @@ Thumbs.db
 *.swo
 .vscode/
 .idea/
-
-# Local scratch/test output
-*.log
