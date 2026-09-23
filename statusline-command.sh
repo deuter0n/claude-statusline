@@ -15,6 +15,7 @@ except Exception:
 
 model = data.get("model", {}).get("display_name", "") or ""
 effort = data.get("effort", {}).get("level", "") or ""
+fast_mode = "true" if data.get("fast_mode") else "false"
 
 cw = data.get("context_window", {}) or {}
 used_pct = cw.get("used_percentage")
@@ -46,7 +47,13 @@ five_reset = "" if five_reset is None else str(five_reset)
 week_reset = seven_day.get("resets_at")
 week_reset = "" if week_reset is None else str(week_reset)
 
-for key, val in [("model", model), ("effort", effort), ("used_pct", used_pct), ("in_tokens", in_tokens), ("out_tokens", out_tokens), ("total_cost", total_cost), ("folder", folder), ("repo_name", repo_name), ("cwd", cwd), ("five_pct", five_pct), ("week_pct", week_pct), ("five_reset", five_reset), ("week_reset", week_reset)]:
+pc = data.get("prompt_cache", {}) or {}
+cache_warm = pc.get("warm")
+cache_warm = "" if cache_warm is None else ("true" if cache_warm else "false")
+cache_expires_at = pc.get("expires_at")
+cache_expires_at = "" if cache_expires_at is None else str(cache_expires_at)
+
+for key, val in [("model", model), ("effort", effort), ("fast_mode", fast_mode), ("used_pct", used_pct), ("in_tokens", in_tokens), ("out_tokens", out_tokens), ("total_cost", total_cost), ("folder", folder), ("repo_name", repo_name), ("cwd", cwd), ("five_pct", five_pct), ("week_pct", week_pct), ("five_reset", five_reset), ("week_reset", week_reset), ("cache_warm", cache_warm), ("cache_expires_at", cache_expires_at)]:
     print(f"{key}={shlex.quote(val)}")
 ')"
 
@@ -60,6 +67,14 @@ commit=""
 if command -v git >/dev/null 2>&1; then
   branch=$(git --no-optional-locks -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null)
   commit=$(git --no-optional-locks -C "$cwd" rev-parse --short HEAD 2>/dev/null)
+  if [ -n "$branch" ]; then
+    read -r g_dirty g_ahead g_behind <<<"$(
+      git --no-optional-locks -C "$cwd" status --porcelain=v2 --branch 2>/dev/null | awk '
+        /^# branch.ab / { a = substr($3, 2); b = substr($4, 2) }
+        /^[12u?] / { d = 1 }
+        END { printf "%d %d %d", d, a, b }'
+    )"
+  fi
 fi
 
 make_bar() {
@@ -202,6 +217,18 @@ colorize_pct() {
   printf '%s%s%s' "$(pct_color "$1")" "$2" "$RESET"
 }
 
+# Severity by time remaining (inverse of pct_color: less time left = worse).
+time_left_color() {
+  local secs=$1
+  if [ "$secs" -le 300 ]; then
+    printf '%s' "$COLOR_RED"
+  elif [ "$secs" -le 900 ]; then
+    printf '%s' "$COLOR_YELLOW"
+  else
+    printf '%s' "$COLOR_GREEN"
+  fi
+}
+
 model_color() {
   local m
   m=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
@@ -232,21 +259,29 @@ if [ -n "$week_pct" ]; then
   limits="${limits:+$limits$SEP}$seg"
 fi
 
+git_state=""
+[ "${g_dirty:-0}" -gt 0 ] && git_state+=" ${COLOR_GITINFO}✱${RESET}"
+[ "${g_ahead:-0}" -gt 0 ] && git_state+=" ${COLOR_GITINFO}⇡${g_ahead}${RESET}"
+[ "${g_behind:-0}" -gt 0 ] && git_state+=" ${COLOR_GITINFO}⇣${g_behind}${RESET}"
+
 out="$mode_indicator"
 if [ -n "$project" ]; then
   seg="$(printf '%s%s%s' "$COLOR_PROJECT" "$project" "$RESET")"
   gitinfo="$branch"
   [ -n "$commit" ] && gitinfo="${gitinfo:+$gitinfo@}$commit"
   [ -n "$gitinfo" ] && seg="$seg $(printf '%s(%s)%s' "$COLOR_GITINFO" "$gitinfo" "$RESET")"
-  out="${out:+$out }$seg"
+  out="${out:+$out }$seg$git_state"
 elif [ -n "$branch" ]; then
   gitinfo="$branch"
   [ -n "$commit" ] && gitinfo="$gitinfo@$commit"
-  out="${out:+$out }$(printf '%s(%s)%s' "$COLOR_GITINFO" "$gitinfo" "$RESET")"
+  out="${out:+$out }$(printf '%s(%s)%s' "$COLOR_GITINFO" "$gitinfo" "$RESET")$git_state"
 fi
 if [ -n "$model" ]; then
   mc="$(model_color "$model")"
   seg="$(printf '%s%s%s' "$mc" "$model" "$RESET")"
+  if [ "$fast_mode" = "true" ]; then
+    seg="$seg $(printf '%s\xe2\x86\xaf%s' "$mc" "$RESET")"
+  fi
   if [ -n "$effort" ]; then
     seg="$seg $(printf '%s(%s)%s' "$mc" "$effort" "$RESET")"
   fi
@@ -258,6 +293,13 @@ fi
 if [ -n "$bar" ]; then
   seg="${COLOR_MUTED}ctx ${RESET}$(colorize_pct "$used_pct" "$bar $ctx_pct")"
   out="${out:+$out$SEP}$seg"
+fi
+if [ "$cache_warm" = "true" ] && [ -n "$cache_expires_at" ]; then
+  cache_left=$((${cache_expires_at%.*} - now))
+  if [ "$cache_left" -gt 0 ]; then
+    seg="${COLOR_MUTED}cache ${RESET}$(time_left_color "$cache_left")$(fmt_duration "$cache_left")${RESET}"
+    out="${out:+$out$SEP}$seg"
+  fi
 fi
 if [ -n "$in_tokens" ] || [ -n "$out_tokens" ]; then
   arrow_down=$(printf '\xe2\x86\x93')
