@@ -194,6 +194,7 @@ COLOR_BOLD_RED=$'\033[31m'
 COLOR_SEP=$'\033[38;5;238m' # dim gray, for a subtle field separator
 RESET=$'\033[0m'
 SEP=" ${COLOR_SEP}|${RESET} "
+MIDDLE_DOT=$(printf '\xc2\xb7')
 
 if [ -n "$CLAUDE_JOB_DIR" ]; then
   mode_indicator="$(printf '%s\xe2\x97\x8b%s' "$COLOR_PROJECT" "$RESET")"
@@ -260,22 +261,32 @@ if [ -n "$week_pct" ]; then
 fi
 
 git_state=""
-[ "${g_dirty:-0}" -gt 0 ] && git_state+=" ${COLOR_GITINFO}✱${RESET}"
-[ "${g_ahead:-0}" -gt 0 ] && git_state+=" ${COLOR_GITINFO}⇡${g_ahead}${RESET}"
-[ "${g_behind:-0}" -gt 0 ] && git_state+=" ${COLOR_GITINFO}⇣${g_behind}${RESET}"
+[ "${g_dirty:-0}" -gt 0 ] && git_state="${git_state:+$git_state }${COLOR_GITINFO}*${RESET}"
+[ "${g_ahead:-0}" -gt 0 ] && git_state="${git_state:+$git_state }${COLOR_GITINFO}⇡${g_ahead}${RESET}"
+[ "${g_behind:-0}" -gt 0 ] && git_state="${git_state:+$git_state }${COLOR_GITINFO}⇣${g_behind}${RESET}"
 
-out="$mode_indicator"
-if [ -n "$project" ]; then
-  seg="$(printf '%s%s%s' "$COLOR_PROJECT" "$project" "$RESET")"
-  gitinfo="$branch"
-  [ -n "$commit" ] && gitinfo="${gitinfo:+$gitinfo@}$commit"
-  [ -n "$gitinfo" ] && seg="$seg $(printf '%s(%s)%s' "$COLOR_GITINFO" "$gitinfo" "$RESET")"
-  out="${out:+$out }$seg$git_state"
-elif [ -n "$branch" ]; then
+# Segments are collected into an array (rather than one joined string) so
+# they can be greedily wrapped across lines when $COLUMNS is too narrow.
+segs=()
+
+seg="$mode_indicator"
+gitinfo=""
+if [ -n "$branch" ]; then
   gitinfo="$branch"
   [ -n "$commit" ] && gitinfo="$gitinfo@$commit"
-  out="${out:+$out }$(printf '%s(%s)%s' "$COLOR_GITINFO" "$gitinfo" "$RESET")$git_state"
+  gitinfo="$(printf '%s(%s)%s' "$COLOR_GITINFO" "$gitinfo" "$RESET")"
 fi
+if [ -n "$project" ]; then
+  proj="$(printf '%s%s%s' "$COLOR_PROJECT" "$project" "$RESET")"
+  [ -n "$gitinfo" ] && proj="$proj $gitinfo"
+  [ -n "$git_state" ] && proj="$proj $git_state"
+  seg="$seg $proj"
+elif [ -n "$gitinfo" ]; then
+  [ -n "$git_state" ] && gitinfo="$gitinfo $git_state"
+  seg="$seg $gitinfo"
+fi
+segs+=("$seg")
+
 if [ -n "$model" ]; then
   mc="$(model_color "$model")"
   seg="$(printf '%s%s%s' "$mc" "$model" "$RESET")"
@@ -285,36 +296,61 @@ if [ -n "$model" ]; then
   if [ -n "$effort" ]; then
     seg="$seg $(printf '%s(%s)%s' "$mc" "$effort" "$RESET")"
   fi
-  out="${out:+$out$SEP}$seg"
-fi
-if [ -n "$limits" ]; then
-  out="${out:+$out$SEP}$limits"
-fi
-if [ -n "$bar" ]; then
-  seg="${COLOR_MUTED}ctx ${RESET}$(colorize_pct "$used_pct" "$bar $ctx_pct")"
-  out="${out:+$out$SEP}$seg"
-fi
-if [ "$cache_warm" = "true" ] && [ -n "$cache_expires_at" ]; then
-  cache_left=$((${cache_expires_at%.*} - now))
-  if [ "$cache_left" -gt 0 ]; then
-    seg="${COLOR_MUTED}cache ${RESET}$(time_left_color "$cache_left")$(fmt_duration "$cache_left")${RESET}"
-    out="${out:+$out$SEP}$seg"
-  fi
+  segs+=("$seg")
 fi
 if [ -n "$in_tokens" ] || [ -n "$out_tokens" ]; then
   arrow_down=$(printf '\xe2\x86\x93')
   arrow_up=$(printf '\xe2\x86\x91')
-  middle_dot=$(printf '\xc2\xb7')
   toks=""
   [ -n "$in_tokens" ] && toks="$(printf '%s%s %s%s' "$COLOR_CYAN" "$arrow_down" "$(fmt_tokens "$in_tokens")" "$RESET")"
-  [ -n "$out_tokens" ] && toks="${toks:+$toks $(printf '%s%s%s' "$COLOR_SEP" "$middle_dot" "$RESET") }$(printf '%s%s %s%s' "$COLOR_CYAN" "$arrow_up" "$(fmt_tokens "$out_tokens")" "$RESET")"
-  out="${out:+$out$SEP}$toks"
+  [ -n "$out_tokens" ] && toks="${toks:+$toks $(printf '%s%s%s' "$COLOR_CYAN" "$MIDDLE_DOT" "$RESET") }$(printf '%s%s %s%s' "$COLOR_CYAN" "$arrow_up" "$(fmt_tokens "$out_tokens")" "$RESET")"
+  segs+=("$toks")
 fi
 if [ -n "$total_cost" ]; then
   thb="$(fmt_cost_thb "$total_cost")"
   seg="$(printf '%s%s%s' "$COLOR_COST" "$(fmt_cost "$total_cost")" "$RESET")"
   [ -n "$thb" ] && seg="$seg $(printf '%s(%s)%s' "$COLOR_COST" "$thb" "$RESET")"
-  out="${out:+$out$SEP}$seg"
+  segs+=("$seg")
+fi
+[ -n "$limits" ] && segs+=("$limits")
+if [ -n "$bar" ]; then
+  segs+=("${COLOR_MUTED}ctx ${RESET}$(colorize_pct "$used_pct" "$bar $ctx_pct")")
+fi
+if [ "$cache_warm" = "true" ] && [ -n "$cache_expires_at" ]; then
+  cache_left=$((${cache_expires_at%.*} - now))
+  if [ "$cache_left" -gt 0 ]; then
+    segs+=("${COLOR_MUTED}cache ${RESET}$(time_left_color "$cache_left")$(fmt_duration "$cache_left")${RESET}")
+  fi
 fi
 
-printf '%s' "$out"
+# Claude Code doesn't connect this script to the terminal (tput/stty can't
+# see it), but it sets $COLUMNS to the terminal width before running us.
+vislen() {
+  printf '%s' "$1" | sed -E 's/\x1b\[[0-9;]*m//g' | wc -m
+}
+
+term_width="${COLUMNS:-0}"
+case "$term_width" in '' | *[!0-9]*) term_width=0 ;; esac
+
+lines=()
+line=""
+for seg in "${segs[@]}"; do
+  [ -z "$seg" ] && continue
+  if [ -z "$line" ]; then
+    line="$seg"
+  else
+    candidate="$line$SEP$seg"
+    if [ "$term_width" -gt 0 ] && [ "$(vislen "$candidate")" -gt "$term_width" ]; then
+      lines+=("$line")
+      line="$seg"
+    else
+      line="$candidate"
+    fi
+  fi
+done
+[ -n "$line" ] && lines+=("$line")
+
+printf '%s' "${lines[0]}"
+for ((i = 1; i < ${#lines[@]}; i++)); do
+  printf '\n%s' "${lines[$i]}"
+done
