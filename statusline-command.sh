@@ -287,6 +287,7 @@ elif [ -n "$gitinfo" ]; then
 fi
 segs+=("$seg")
 
+model_idx=-1
 if [ -n "$model" ]; then
   mc="$(model_color "$model")"
   seg="$(printf '%s%s%s' "$mc" "$model" "$RESET")"
@@ -297,6 +298,7 @@ if [ -n "$model" ]; then
     seg="$seg $(printf '%s(%s)%s' "$mc" "$effort" "$RESET")"
   fi
   segs+=("$seg")
+  model_idx=$((${#segs[@]} - 1))
 fi
 if [ -n "$in_tokens" ] || [ -n "$out_tokens" ]; then
   arrow_down=$(printf '\xe2\x86\x93')
@@ -306,11 +308,13 @@ if [ -n "$in_tokens" ] || [ -n "$out_tokens" ]; then
   [ -n "$out_tokens" ] && toks="${toks:+$toks $(printf '%s%s%s' "$COLOR_CYAN" "$MIDDLE_DOT" "$RESET") }$(printf '%s%s %s%s' "$COLOR_CYAN" "$arrow_up" "$(fmt_tokens "$out_tokens")" "$RESET")"
   segs+=("$toks")
 fi
+cost_idx=-1
 if [ -n "$total_cost" ]; then
   thb="$(fmt_cost_thb "$total_cost")"
   seg="$(printf '%s%s%s' "$COLOR_COST" "$(fmt_cost "$total_cost")" "$RESET")"
   [ -n "$thb" ] && seg="$seg $(printf '%s(%s)%s' "$COLOR_COST" "$thb" "$RESET")"
   segs+=("$seg")
+  cost_idx=$((${#segs[@]} - 1))
 fi
 [ -n "$limits" ] && segs+=("$limits")
 if [ -n "$bar" ]; then
@@ -332,23 +336,54 @@ vislen() {
 term_width="${COLUMNS:-0}"
 case "$term_width" in '' | *[!0-9]*) term_width=0 ;; esac
 
-lines=()
-line=""
-for seg in "${segs[@]}"; do
-  [ -z "$seg" ] && continue
-  if [ -z "$line" ]; then
-    line="$seg"
-  else
-    candidate="$line$SEP$seg"
-    if [ "$term_width" -gt 0 ] && [ "$(vislen "$candidate")" -gt "$term_width" ]; then
-      lines+=("$line")
+# Greedily packs the given segments into $lines, wrapping whenever the next
+# segment would overflow $term_width.
+pack_group() {
+  local line="" seg candidate
+  for seg in "$@"; do
+    [ -z "$seg" ] && continue
+    if [ -z "$line" ]; then
       line="$seg"
     else
-      line="$candidate"
+      candidate="$line$SEP$seg"
+      if [ "$term_width" -gt 0 ] && [ "$(vislen "$candidate")" -gt "$term_width" ]; then
+        lines+=("$line")
+        line="$seg"
+      else
+        line="$candidate"
+      fi
     fi
-  fi
+  done
+  [ -n "$line" ] && lines+=("$line")
+}
+
+full_joined=""
+for seg in "${segs[@]}"; do
+  [ -z "$seg" ] && continue
+  full_joined="${full_joined:+$full_joined$SEP}$seg"
 done
-[ -n "$line" ] && lines+=("$line")
+
+lines=()
+if [ "$cost_idx" -ge 0 ] && [ "$term_width" -gt 0 ] && [ "$(vislen "$full_joined")" -gt "$term_width" ]; then
+  # Doesn't fit on one line: force the break right after the cost segment
+  # rather than wherever the greedy pack would otherwise land it.
+  group1_joined=""
+  for seg in "${segs[@]:0:$((cost_idx + 1))}"; do
+    [ -z "$seg" ] && continue
+    group1_joined="${group1_joined:+$group1_joined$SEP}$seg"
+  done
+  if [ "$model_idx" -ge 0 ] && [ "$(vislen "$group1_joined")" -gt "$term_width" ]; then
+    # Still doesn't fit in two lines: force a third break right before the
+    # model segment rather than wherever the greedy pack would land it.
+    pack_group "${segs[@]:0:$model_idx}"
+    pack_group "${segs[@]:$model_idx:$((cost_idx + 1 - model_idx))}"
+  else
+    pack_group "${segs[@]:0:$((cost_idx + 1))}"
+  fi
+  pack_group "${segs[@]:$((cost_idx + 1))}"
+else
+  pack_group "${segs[@]}"
+fi
 
 printf '%s' "${lines[0]}"
 for ((i = 1; i < ${#lines[@]}; i++)); do
