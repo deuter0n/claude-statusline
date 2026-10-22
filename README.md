@@ -58,6 +58,16 @@ curl -o ~/.claude/statusline-command.sh \
 chmod +x ~/.claude/statusline-command.sh
 ```
 
+Or, to pick up updates with a `git pull` (or test local edits live), clone the repo and symlink the script instead of copying it:
+
+```bash
+git clone https://github.com/deuter0n/claude-statusline.git ~/projects/claude-statusline
+mkdir -p ~/.claude
+ln -sf ~/projects/claude-statusline/statusline-command.sh ~/.claude/statusline-command.sh
+```
+
+Use an absolute target path (as above) so the link resolves no matter where it's read from, and don't move or delete the clone afterwards or the link will break.
+
 Then point Claude Code at it in `~/.claude/settings.json`:
 
 ```json
